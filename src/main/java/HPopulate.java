@@ -19,9 +19,12 @@ import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 
 
 public class HPopulate {
+    public static final String tableNameStr = "FlightDelays";
+    public static final String familyName = "delayInfo";
+
     private static void createTable(Configuration conf) throws IOException {
         try (Connection connection = ConnectionFactory.createConnection(conf); Admin admin = connection.getAdmin()) {
-            TableName tableName = TableName.valueOf("FlightDelays");
+            TableName tableName = TableName.valueOf(tableNameStr);
 
             // Delete table if it exists
             if (admin.tableExists(tableName)) {
@@ -59,7 +62,7 @@ public class HPopulate {
         job.addFileToClassPath(csvParserPath);
         job.setJarByClass(HPopulate.class);
         job.setMapperClass(HPopulateMapper.class);
-        TableMapReduceUtil.initTableReducerJob("FlightDelays", null, job);
+        TableMapReduceUtil.initTableReducerJob(tableNameStr, null, job);
         job.setNumReduceTasks(0);
 
         FileInputFormat.addInputPath(job, new Path(args[0]));
@@ -76,7 +79,7 @@ public class HPopulate {
             // Establish the connection and open the table
             Configuration conf = context.getConfiguration();
             this.connection = ConnectionFactory.createConnection(conf);
-            this.table = connection.getTable(TableName.valueOf("FlightDelays"));
+            this.table = connection.getTable(TableName.valueOf(tableNameStr));
         }
 
         @Override
@@ -100,12 +103,12 @@ public class HPopulate {
 
             Put put = new Put(Bytes.toBytes(rowKey));
 
-            put.addColumn(Bytes.toBytes("delayInfo"), Bytes.toBytes("EntireRow"), Bytes.toBytes(value.toString()));
-            put.addColumn(Bytes.toBytes("delayInfo"), Bytes.toBytes("Carrier"), Bytes.toBytes(carrier));
-            put.addColumn(Bytes.toBytes("delayInfo"), Bytes.toBytes("Year"), Bytes.toBytes(year));
-            put.addColumn(Bytes.toBytes("delayInfo"), Bytes.toBytes("Month"), Bytes.toBytes(month));
-            put.addColumn(Bytes.toBytes("delayInfo"), Bytes.toBytes("ArrDelayMinutes"), Bytes.toBytes(arrDelay));
-            put.addColumn(Bytes.toBytes("delayInfo"), Bytes.toBytes("Cancelled"), Bytes.toBytes(cancelled));
+            put.addColumn(Bytes.toBytes(familyName), Bytes.toBytes("EntireRow"), Bytes.toBytes(value.toString()));
+            put.addColumn(Bytes.toBytes(familyName), Bytes.toBytes("Carrier"), Bytes.toBytes(carrier));
+            put.addColumn(Bytes.toBytes(familyName), Bytes.toBytes("Year"), Bytes.toBytes(year));
+            put.addColumn(Bytes.toBytes(familyName), Bytes.toBytes("Month"), Bytes.toBytes(month));
+            put.addColumn(Bytes.toBytes(familyName), Bytes.toBytes("ArrDelayMinutes"), Bytes.toBytes(arrDelay));
+            put.addColumn(Bytes.toBytes(familyName), Bytes.toBytes("Cancelled"), Bytes.toBytes(cancelled));
 
             context.write(hbaseRowKey, put);
         }

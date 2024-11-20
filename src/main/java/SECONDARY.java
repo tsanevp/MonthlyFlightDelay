@@ -9,11 +9,12 @@ import org.apache.hadoop.mapreduce.Partitioner;
 import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
-import org.apache.hadoop.util.GenericOptionsParser;
 
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
+import java.util.Arrays;
+import java.util.HashMap;
 
 /**
  * A Hadoop MapReduce program that finds the average delay in
@@ -23,14 +24,14 @@ import java.io.IOException;
  */
 public class SECONDARY {
     // Indexes of desired data
-    public static final int airlineIndex = 6;
     private static final int yearIndex = 0;
     private static final int monthIndex = 2;
     private static final int flightDateIndex = 5;
+    public static final int airlineIndex = 6;
     private static final int destinationIndex = 17;
     private static final int arrDelayMinutesIndex = 37;
     private static final int cancelledIndex = 41;
-    private static final int expectedYear = 2008;
+    private static final int expectedYear = 2007;
     private static final int numReducers = 10;
 
     /**
@@ -41,16 +42,11 @@ public class SECONDARY {
      * @throws Exception If an error occurs during job configuration or execution.
      */
     public static void main(String[] args) throws Exception {
-        // Declare CSVParser.jar path
-        Path csvParserPath = new Path("s3://a3b/opencsv.jar");
-
         // Jop 1 Configurations
         Configuration conf = new Configuration();
-        String[] otherArgs = new GenericOptionsParser(conf, args).getRemainingArgs();
 
         Job job = Job.getInstance(conf, "Monthly flight delay per airline & month");
 
-        job.addFileToClassPath(csvParserPath);
         job.setJarByClass(SECONDARY.class);
         job.setMapperClass(FlightMapper.class);
         job.setReducerClass(FlightReducer.class);
@@ -62,8 +58,8 @@ public class SECONDARY {
         job.setPartitionerClass(FlightPartitioner.class);
         job.setNumReduceTasks(numReducers);
 
-        FileInputFormat.addInputPath(job, new Path(otherArgs[0]));
-        FileOutputFormat.setOutputPath(job, new Path(otherArgs[1]));
+        FileInputFormat.addInputPath(job, new Path(args[0]));
+        FileOutputFormat.setOutputPath(job, new Path(args[1]));
 
         // Wait for job completion
         System.exit(job.waitForCompletion(true) ? 0 : 1);
@@ -103,8 +99,12 @@ public class SECONDARY {
                 String[] fields = csvParser.parseLine(value.toString());
 
                 int year = Integer.parseInt(fields[yearIndex]);
+                int month = Integer.parseInt(fields[monthIndex]);
+                String airline = fields[airlineIndex];
                 String flightDate = fields[flightDateIndex];
                 String destination = fields[destinationIndex];
+                String cancelled = fields[cancelledIndex];
+                String arrDelayMinutes = fields[arrDelayMinutesIndex];
 
                 // Filter by year expected year of 2008
                 if (year != expectedYear || invalidString(flightDate) || invalidString(destination)) {
@@ -112,17 +112,12 @@ public class SECONDARY {
                 }
 
                 // Filter out records with cancelled flights
-                boolean cancelled = fields[cancelledIndex].equals("1");
-                if (cancelled) return;
+                if (!cancelled.equals("0.00")) return;
 
                 // Check that we have a valid airline
-                String airline = fields[airlineIndex];
                 if (invalidString(airline)) return;
 
                 // Check valid month and non-empty delay
-                int month = Integer.parseInt(fields[monthIndex]);
-                String arrDelayMinutes = fields[arrDelayMinutesIndex];
-
                 if (month < 0 || month > 12 || invalidString(arrDelayMinutes)) return;
 
                 compositeKey.setAirline(airline);
@@ -182,6 +177,61 @@ public class SECONDARY {
         }
     }
 
+//    /**
+//     * Reducer class for the first MapReduce job.
+//     * This reducer is responsible for pairing two-leg flights (ORD -> X and X -> JFK),
+//     * where flights from ORD to an intermediary airport (F1) are paired with flights
+//     * from that airport to JFK (F2). It calculates the total delay and counts the
+//     * number of valid paired routes for each date.
+//     */
+//    public static class FlightReducer extends Reducer<FlightKey, DoubleWritable, Text, Text> {
+//        private final Text airline = new Text();
+//        private final Text avgMonthlyDelay = new Text();
+//
+//        private static String getAvgDelayAsString(int[] countFlights, double[] result) {
+//            StringBuilder avgDelay = new StringBuilder();
+//            for (int i = 0; i < 12; i++) {
+//                if (countFlights[i] > 0) { // Avoid division by zero
+//                    avgDelay.append(String.format("(%d, %d)", i + 1, Math.round(result[i] / countFlights[i])));
+//                } else {
+//                    avgDelay.append(String.format("(%d, 0)", i + 1)); // Default to 0 if no flights for the month
+//                }
+//                if (i < 11) {
+//                    avgDelay.append(", "); // Add a comma between entries, but not after the last one
+//                }
+//            }
+//            return avgDelay.toString();
+//        }
+//
+//        /**
+//         * The reduce method processes each date and airport pair, grouping flights from ORD to X (F1)
+//         * and from X to JFK (F2). It finds valid flight pairs with an F1 arrival followed by an F2 departure.
+//         * For each valid pair, it calculates the total combined delay and increments the flight count.
+//         *
+//         * @param flightKey    The key representing the date and intermediary airport (e.g., "2007-06-15|ATL").
+//         * @param flightDelays The iterable list of Text values representing flight leg data (arrival or departure times and delay).
+//         * @param context      The context for writing the output key-value pairs (total delay and count).
+//         * @throws IOException          If an I/O error occurs.
+//         * @throws InterruptedException If the reducer is interrupted.
+//         */
+//        public void reduce(FlightKey flightKey, Iterable<DoubleWritable> flightDelays, Context context) throws IOException, InterruptedException {
+//            double[] result = new double[12];
+//            int[] countFlights = new int[12];
+//
+//            int month = flightKey.getMonth();
+//            for (DoubleWritable flightDelay : flightDelays) {
+//                result[month - 1] += flightDelay.get();
+//                countFlights[month - 1] += 1;
+//            }
+//
+//            String avgDelay = getAvgDelayAsString(countFlights, result);
+//
+//            airline.set(flightKey.getAirline());
+//            avgMonthlyDelay.set(avgDelay);
+//            context.write(airline, avgMonthlyDelay);
+//        }
+//    }
+
     /**
      * Reducer class for the first MapReduce job.
      * This reducer is responsible for pairing two-leg flights (ORD -> X and X -> JFK),
@@ -192,6 +242,7 @@ public class SECONDARY {
     public static class FlightReducer extends Reducer<FlightKey, DoubleWritable, Text, Text> {
         private final Text airline = new Text();
         private final Text avgMonthlyDelay = new Text();
+        private final HashMap<String, int[]> carrierDelayMap = new HashMap<>();
 
         private static String getAvgDelayAsString(int[] countFlights, double[] result) {
             StringBuilder avgDelay = new StringBuilder();
@@ -220,19 +271,27 @@ public class SECONDARY {
          * @throws InterruptedException If the reducer is interrupted.
          */
         public void reduce(FlightKey flightKey, Iterable<DoubleWritable> flightDelays, Context context) throws IOException, InterruptedException {
-            double[] result = new double[12];
-            int[] countFlights = new int[12];
+            double delay = 0.00;
+            int countFlights = 0;
 
             int month = flightKey.getMonth();
+            String carrier = flightKey.getAirline();
             for (DoubleWritable flightDelay : flightDelays) {
-                result[month - 1] += flightDelay.get();
-                countFlights[month - 1] += 1;
+                delay += flightDelay.get();
+                countFlights += 1;
             }
 
-            String avgDelay = getAvgDelayAsString(countFlights, result);
+            // Check if the carrier exists in the map
+            if (!carrierDelayMap.containsKey(carrier)) {
+                // If not, create a new array for the carrier
+                carrierDelayMap.put(carrier, new int[12]);
+            }
+
+            int avgDelay = (int) Math.ceil(delay / countFlights);
+            carrierDelayMap.get(carrier)[month - 1] += avgDelay;
 
             airline.set(flightKey.getAirline());
-            avgMonthlyDelay.set(avgDelay);
+            avgMonthlyDelay.set(Arrays.toString(carrierDelayMap.get(carrier)));
             context.write(airline, avgMonthlyDelay);
         }
     }

@@ -60,9 +60,9 @@
     </plugins>
   </build>
   <properties>
-    <maven.compiler.target>8</maven.compiler.target>
-    <maven.compiler.source>8</maven.compiler.source>
-    <hadoop.version>3.3.6</hadoop.version>
     <hbase.version>2.5.7</hbase.version>
+    <hadoop.version>3.3.6</hadoop.version>
+    <maven.compiler.source>8</maven.compiler.source>
+    <maven.compiler.target>8</maven.compiler.target>
   </properties>
 </project>

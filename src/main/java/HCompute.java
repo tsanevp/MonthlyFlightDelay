@@ -1,12 +1,12 @@
+import com.opencsv.CSVParser;
+import com.opencsv.CSVParserBuilder;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.CompareOperator;
 import org.apache.hadoop.hbase.HBaseConfiguration;
-import org.apache.hadoop.hbase.TableName;
 import org.apache.hadoop.hbase.client.*;
 import org.apache.hadoop.hbase.filter.FilterList;
 import org.apache.hadoop.hbase.filter.SingleColumnValueFilter;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
-import org.apache.hadoop.hbase.mapreduce.TableInputFormat;
 import org.apache.hadoop.hbase.mapreduce.TableMapReduceUtil;
 import org.apache.hadoop.hbase.mapreduce.TableMapper;
 import org.apache.hadoop.hbase.util.Bytes;
@@ -21,42 +21,49 @@ import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 
 public class HCompute {
     // Indexes of desired data
     public static final int airlineIndex = 6;
+    public static final String tableNameStr = "FlightDelays";
+    public static final String familyName = "delayInfo";
     private static final int yearIndex = 0;
     private static final int monthIndex = 2;
     private static final int flightDateIndex = 5;
     private static final int destinationIndex = 17;
     private static final int arrDelayMinutesIndex = 37;
     private static final int cancelledIndex = 41;
-    private static final int expectedYear = 2008;
-    private static final int numReducers = 10;
+    private static final int expectedYear = 2007;
+    private static final int numReducers = 6;
 
     public static void main(String[] args) throws Exception {
+        // Declare CSVParser.jar path
+        Path csvParserPath = new Path("s3://a3b/opencsv.jar");
+
         // Declare conf
         Configuration conf = HBaseConfiguration.create();
         conf.addResource(new File("/etc/hbase/conf/hbase-site.xml").toURI().toURL());
-        
+
         // Declare job
         Job job = Job.getInstance(conf, "HCompute");
         job.setJarByClass(HCompute.class);
+        job.addFileToClassPath(csvParserPath);
 
         // Declare scan conf
         Scan scan = getHBaseTableScanConf();
-        TableMapReduceUtil.initTableMapperJob("FlightDelays", scan, HComputeMapper.class, FlightKey.class, Text.class, job);
+        TableMapReduceUtil.initTableMapperJob(tableNameStr, scan, HComputeMapper.class, FlightKey.class, Text.class, job);
 
         // Define classes
         job.setPartitionerClass(FlightPartitioner.class);
         job.setNumReduceTasks(numReducers);
-        job.setReducerClass(HComputeReducer.class);
+        job.setReducerClass(FlightReducer.class);
         job.setSortComparatorClass(FlightKeyComparator.class);
         job.setGroupingComparatorClass(FlightGroupComparator.class);
 
         // Set output types
         job.setMapOutputKeyClass(FlightKey.class);
-        job.setMapOutputValueClass(IntWritable.class);
+        job.setMapOutputValueClass(DoubleWritable.class);
         job.setOutputKeyClass(FlightKey.class);
         job.setOutputValueClass(DoubleWritable.class);
 
@@ -71,10 +78,10 @@ public class HCompute {
 
         // Define filters
         FilterList filterList = new FilterList(FilterList.Operator.MUST_PASS_ALL);
-        SingleColumnValueFilter yearFilter = new SingleColumnValueFilter("delayInfo".getBytes(), "Year".getBytes(), CompareOperator.EQUAL, Bytes.toBytes(2008));
+        SingleColumnValueFilter yearFilter = new SingleColumnValueFilter(familyName.getBytes(), "Year".getBytes(), CompareOperator.EQUAL, Bytes.toBytes(String.valueOf(expectedYear)));
         filterList.addFilter(yearFilter);
 
-        SingleColumnValueFilter cancelledFilter = new SingleColumnValueFilter("delayInfo".getBytes(), "Cancelled".getBytes(), CompareOperator.EQUAL, "0".getBytes());
+        SingleColumnValueFilter cancelledFilter = new SingleColumnValueFilter(familyName.getBytes(), "Cancelled".getBytes(), CompareOperator.EQUAL, "0.00".getBytes());
         filterList.addFilter(cancelledFilter);
 
         // Set scan filters
@@ -82,71 +89,58 @@ public class HCompute {
         return scan;
     }
 
-    public static class HComputeMapper extends TableMapper<ImmutableBytesWritable, IntWritable> {
+    public static class HComputeMapper extends TableMapper<FlightKey, DoubleWritable> {
+        private final FlightKey compositeKey = new FlightKey();
+        private final DoubleWritable delayValue = new DoubleWritable();
+        private final CSVParser csvParser = new CSVParserBuilder().withSeparator(',').build();
 
-        private static final String HBASE_TABLE_NAME = "FlightDelays"; // HBase table name
-        private static final String FAMILY_NAME = "delayInfo"; // Column family
-
-        private Connection connection;
-        private Table table;
-
-        @Override
-        protected void setup(Context context) throws IOException, InterruptedException {
-            // Setup the HBase connection and table
-            Configuration conf = HBaseConfiguration.create();
-            connection = ConnectionFactory.createConnection(conf);
-            table = connection.getTable(TableName.valueOf(HBASE_TABLE_NAME));
+        /**
+         * Check to see if the given string is valid.
+         *
+         * @param str A string.
+         * @return Whether the string is valid.
+         */
+        private static boolean invalidString(String str) {
+            return str == null || str.isEmpty();
         }
 
         @Override
         protected void map(ImmutableBytesWritable key, Result value, Context context) throws IOException, InterruptedException {
-            // The key from input file is not used, so we focus on reading from HBase
+            try {
+                String row = new String(value.getValue(Bytes.toBytes(familyName), Bytes.toBytes("EntireRow")), StandardCharsets.UTF_8);
+                String[] fields = csvParser.parseLine(row);
+                if (fields.length == 0) return;
 
-            // Extract necessary fields from the value (we'll assume it's in CSV format)
-            String[] fields = value.toString().split(",");
-            if (fields.length == 0) return;
+                int year = Integer.parseInt(fields[yearIndex]);
+                String flightDate = fields[flightDateIndex];
+                String destination = fields[destinationIndex];
 
-            String carrier = fields[6];  // Carrier
-            String year = fields[0];     // Year
-            String month = fields[2];    // Month
-            String flightDate = fields[5]; // Flight date
-            String origin = fields[11];  // Origin
-            String cancelled = fields[41]; // Cancelled flag
+                // Filter by year expected year of 2008
+                if (year != expectedYear || invalidString(flightDate) || invalidString(destination)) {
+                    return;
+                }
 
-            // Skip rows that are cancelled
-            if ("1".equals(cancelled)) {
-                return;
+                // Filter out records with cancelled flights
+                boolean cancelled = fields[cancelledIndex].equals("1");
+                if (cancelled) return;
+
+                // Check that we have a valid airline
+                String airline = fields[airlineIndex];
+                if (invalidString(airline)) return;
+
+                // Check valid month and non-empty delay
+                int month = Integer.parseInt(fields[monthIndex]);
+                String arrDelayMinutes = fields[arrDelayMinutesIndex];
+
+                if (month < 0 || month > 12 || invalidString(arrDelayMinutes)) return;
+
+                compositeKey.setAirline(airline);
+                compositeKey.setMonth(month);
+                delayValue.set(Double.parseDouble(arrDelayMinutes));
+                context.write(compositeKey, delayValue);
+            } catch (Exception ignored) {
             }
 
-            // Construct the row key for HBase (e.g., "AA_2008_06_01_LAX")
-            String rowKey = carrier + "_" + year + "_" + month + "_" + flightDate + "_" + origin;
-
-            // Get the row from HBase
-            Get get = new Get(Bytes.toBytes(rowKey));
-            Result result = table.get(get);
-
-            if (result.isEmpty()) {
-                return; // Skip empty rows
-            }
-
-            // Extract the ArrDelayMinutes value from HBase (stored in "delayInfo:ArrDelayMinutes")
-            String delay = Bytes.toString(result.getValue(Bytes.toBytes(FAMILY_NAME), Bytes.toBytes("ArrDelayMinutes")));
-
-            if (delay != null && !delay.isEmpty()) {
-                // Output the airline and month combination as the key
-                String outputKey = carrier + "_" + year + "_" + month; // Key: airline_year_month
-                String outputValue = delay; // Value: delay for the flight
-
-                // Write the result (this is an intermediate key-value pair)
-                context.write(new Text(outputKey), new Text(outputValue));
-            }
-        }
-
-        @Override
-        protected void cleanup(Context context) throws IOException, InterruptedException {
-            // Cleanup the connection to HBase
-            table.close();
-            connection.close();
         }
     }
 
