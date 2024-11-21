@@ -32,7 +32,7 @@ public class SECONDARY {
     private static final int arrDelayMinutesIndex = 37;
     private static final int cancelledIndex = 41;
     private static final int expectedYear = 2007;
-    private static final int numReducers = 10;
+    private static final int numReducers = 6;
 
     /**
      * The main method that sets up the Hadoop MapReduce job configuration.
@@ -42,28 +42,33 @@ public class SECONDARY {
      * @throws Exception If an error occurs during job configuration or execution.
      */
     public static void main(String[] args) throws Exception {
-        // Jop 1 Configurations
+        // Define initial conf
         Configuration conf = new Configuration();
-
-        Job job = Job.getInstance(conf, "Monthly flight delay per airline & month");
-
+        Job job = Job.getInstance(conf, "Secondary - Monthly Delay");
         job.setJarByClass(SECONDARY.class);
         job.setMapperClass(FlightMapper.class);
         job.setReducerClass(FlightReducer.class);
-        job.setOutputKeyClass(FlightKey.class);
+
+        // Output types
+        job.setMapOutputKeyClass(FlightKey.class);
+        job.setMapOutputValueClass(DoubleWritable.class);
+        job.setOutputKeyClass(Text.class);
         job.setOutputValueClass(Text.class);
+
+        // Intermediate work
+        job.setNumReduceTasks(numReducers);
+        job.setPartitionerClass(FlightPartitioner.class);
         job.setSortComparatorClass(FlightKeyComparator.class);
         job.setGroupingComparatorClass(FlightGroupComparator.class);
 
-        job.setPartitionerClass(FlightPartitioner.class);
-        job.setNumReduceTasks(numReducers);
-
+        // Input & output
         FileInputFormat.addInputPath(job, new Path(args[0]));
         FileOutputFormat.setOutputPath(job, new Path(args[1]));
 
         // Wait for job completion
         System.exit(job.waitForCompletion(true) ? 0 : 1);
     }
+
 
     /**
      * Mapper class for the first MapReduce job.
@@ -106,19 +111,14 @@ public class SECONDARY {
                 String cancelled = fields[cancelledIndex];
                 String arrDelayMinutes = fields[arrDelayMinutesIndex];
 
-                // Filter by year expected year of 2008
-                if (year != expectedYear || invalidString(flightDate) || invalidString(destination)) {
+                // Check year, flight date, destination, and not cancelled
+                if (year != expectedYear || invalidString(flightDate) ||
+                        invalidString(destination) || !cancelled.equals("0.00")) {
                     return;
                 }
 
-                // Filter out records with cancelled flights
-                if (!cancelled.equals("0.00")) return;
-
-                // Check that we have a valid airline
-                if (invalidString(airline)) return;
-
-                // Check valid month and non-empty delay
-                if (month < 0 || month > 12 || invalidString(arrDelayMinutes)) return;
+                // Check valid month, non-empty delay, and valid airline
+                if (month < 0 || month > 12 || invalidString(arrDelayMinutes) || invalidString(airline)) return;
 
                 compositeKey.setAirline(airline);
                 compositeKey.setMonth(month);
@@ -173,7 +173,7 @@ public class SECONDARY {
             FlightKey flightKeyA = (FlightKey) a;
             FlightKey flightKeyB = (FlightKey) b;
 
-            return flightKeyA.getAirline().compareTo(flightKeyB.getAirline());
+            return flightKeyA.compare(flightKeyB);
         }
     }
 
@@ -296,7 +296,7 @@ public class SECONDARY {
         }
     }
 
-    public static class FlightKey implements WritableComparable<FlightKey> {
+    public static class FlightKey implements WritableComparable {
         private String airline;
         private int month;
 
@@ -336,31 +336,22 @@ public class SECONDARY {
         }
 
         // Comparison for sorting
+        public int compare(Object o) {
+            FlightKey other = (FlightKey) o;
+            return other.airline.compareTo(this.airline);
+        }
+
+        // Comparison for sorting
         @Override
-        public int compareTo(FlightKey other) {
-            int cmp = this.airline.compareTo(other.airline);
+        public int compareTo(Object other) {
+            int cmp = this.compare(other);
             if (cmp != 0) {
                 return cmp; // Compare by airline first
             }
-            return Integer.compare(this.month, other.month); // Then compare by month
-        }
+            FlightKey otherFlightKey = (FlightKey) other;
 
-        // Comparison for grouping
-        public int groupComparator(FlightKey other) {
-            return this.airline.compareTo(other.airline);
-        }
-
-        // For proper partitioning and grouping in Hadoop
-        public int hashCode(int numPartitions) {
-            return Math.abs(airline.hashCode()) % numPartitions;
-        }
-
-        @Override
-        public boolean equals(Object obj) {
-            if (this == obj) return true;
-            if (obj == null || getClass() != obj.getClass()) return false;
-            FlightKey other = (FlightKey) obj;
-            return airline.equals(other.airline) && month == other.month;
+            // Then compare by month
+            return Integer.compare(this.month, otherFlightKey.month);
         }
 
         @Override
